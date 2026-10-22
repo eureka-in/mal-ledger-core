@@ -3,28 +3,118 @@
 ## 1. Refused Acceptance Criteria
 
 ### Criterion 2: "E7 causes exactly one overdraft fee to be assessed, on Day 2."
-*   **Status:** REJECTED & REFUSED
-*   **Reasoning:** E7 is a backdated DEBIT of AED 620.00 with `value_date = Day 2` processed on Day 5. By retroactively applying an AED 620.00 reduction to Day 2's closing value, it drops the historical closing balances for **both Day 2 and Day 4** below zero (Day 3 remains positive at +AED 30.00 due to E4's credit). Because the non-negotiable directive mandates that an overdraft penalty is assessed *once per day per account when that day's closing ledger balance is negative*, E7 triggers exactly **two** distinct overdraft events across the window (one for Day 2, and one for Day 4). Claiming it only causes one fee is mathematically and contractually false.
+
+- **Status:** REJECTED
+- **Reasoning:** E7 is a debit of AED 620.00 processed on Day 5 with `value_date = Day 2`. Its arrival changes the retrospectively calculated historical balance for Day 2, but it does not automatically change the fee assessment made when Day 2 was originally processed.
+
+  Under the selected interpretation, fees are assessed using the closing ledger balance available at each day's processing cutoff. The original Day 2 closing balance is AED 250.00, so no overdraft fee is assessed on Day 2. The original Day 4 closing balance is AED 285.00, so no fee is assessed on Day 4 either.
+
+  When E7 arrives on Day 5, the closing ledger balance becomes negative:
+
+  `250.00 + 400.00 - 185.00 - 180.00 - 620.00 = -335.00`
+
+  Therefore, an overdraft fee of AED 25.00 is assessed on Day 5 and booked with value date Day 5.
+
+  The historical Day 2 balance, viewed after E7 arrives, is AED -370.00. However, a retrospectively calculated balance is not equivalent to the balance used for the original Day 2 fee assessment.
+
+  This interpretation preserves the original fee-assessment history and prevents later backdated events from silently rewriting previously recorded decisions. The specification does not explicitly define retroactive fee reassessment, so this choice is documented in `AMBIGUITIES.md`.
 
 ### Criterion 4: "Any settlement referencing an authorization ID not present in the ledger must be rejected and the funds must not leave the account."
-*   **Status:** REJECTED & REFUSED
-*   **Reasoning:** In core transactional banking networks (e.g., Visa/Mastercard clearing networks), forced clearings or unsolicited settlements (like `Auth-Z` in event E6) are legally binding payment records. If an external entity files a settlement charge without a matching authorization, the bank cannot unilaterally reject it to save the customer's balance. Doing so creates a massive financial imbalance with the central clearing house. The settlement must be honored as a ledger debit, even if it forces an account into overdraft.
+
+- **Status:** REJECTED
+- **Reasoning:** E6 is a settlement for Auth-Z, for which no preceding authorization exists in the event stream.
+
+  An unmatched settlement is not necessarily invalid in every payment-processing workflow. Some payment-network and clearing arrangements may permit a settlement or presentment without a matching authorization in the local ledger. The appropriate treatment depends on the applicable network rules and transaction type.
+
+  For this simulation, E6 is honored as a ledger debit of AED 180.00. Because there is no matching authorization, no hold is released, and a diagnostic warning is recorded.
+
+  This is a deliberate business-rule interpretation for the assessment, not a universal claim that all unmatched settlements must be accepted.
 
 ### Criterion 6: "After E9, all balances and fees return to their pre-E7 values."
-*   **Status:** REJECTED & REFUSED
-*   **Reasoning:** The system rules explicitly state that the ledger is **append-only and immutable**. Event E9 arrives on Day 6 as a *Reversal* of E7. While E9 counterbalances E7's principal value, it cannot retroactively erase the physical history of Day 5, where an overdraft fee had already been processed, calculated, and appended to the ledger data store. Erasures break audit logs. If a fee is reversed, it must be recorded as an explicit *Fee Credit* entry on Day 6, keeping history intact.
+
+- **Status:** REJECTED
+- **Reasoning:** E9 reverses E7, the AED 620.00 debit. The reversal counteracts E7's principal effect, but it does not automatically erase independent fee assessments already booked.
+
+  Before E7, the Day 5 ledger balance is AED 285.00. After E7, it becomes AED -335.00, triggering a Day 5 overdraft fee of AED 25.00.
+
+  When E9 arrives on Day 6, E7's debit is excluded from the effective ledger calculation, but the Day 5 fee remains booked. The resulting balance, before any applicable Day 6 interest capitalization, is:
+
+  `250.00 + 400.00 - 185.00 - 180.00 - 25.00 = 260.00`
+
+  Therefore, the balance does not return to AED 285.00.
+
+  The ledger is append-only: E7 remains recorded, E9 is added as a separate reversal event, and the previously booked fee is retained. If the business rules require a fee refund, that refund must be recorded as a separate compensating entry rather than achieved by deleting or mutating the original fee record.
 
 ### Criterion 7: "The three BHD instalments in E10 must each be BHD 3.334."
-*   **Status:** REJECTED & REFUSED
-*   **Reasoning:** Simple math disproves this claim: 3.334 × 3 = 10.002. This causes a balance discrepancy of `+0.002 BHD`, meaning money would be created out of thin air. To divide 10.000 BHD into three equal parts with 3 decimal places, the remainder must be allocated dynamically across the entries (e.g., Segment 1 = 3.333, Segment 2 = 3.333, Segment 3 = 3.334). They cannot all be 3.334.
+
+- **Status:** REJECTED
+- **Reasoning:** Three instalments of BHD 3.334 total BHD 10.002, exceeding the original E10 credit of BHD 10.000 by BHD 0.002.
+
+  Since BHD uses three decimal places, the instalments must respect that precision and sum exactly to the source amount.
+
+  The selected allocation is:
+
+  - Instalment 1: BHD 3.333
+  - Instalment 2: BHD 3.333
+  - Instalment 3: BHD 3.334
+  - Total: BHD 10.000
+
+  The remainder is assigned to the final instalment so that the split conserves the original amount without creating or losing money.
 
 ### Criterion 8: "If the rounded daily interest accruals do not sum to the capitalized total, the remainder is discarded."
-*   **Status:** REJECTED & REFUSED
-*   **Reasoning:** This contradicts the strict rule: *"The rounded daily accruals must sum exactly to the capitalized total."* Discarding remainders breaks financial reconciliation. The final capitalization event must act as an absorbing entry to capture fractional discrepancies.
+
+- **Status:** REJECTED
+- **Reasoning:** This criterion conflicts with the explicit requirement that rounded daily interest accruals must sum exactly to the capitalized total.
+
+  Each daily accrual is calculated and rounded to the account currency's precision. The capitalized interest at the end of Day 6 must equal the sum of those recorded daily accruals.
+
+  The implementation therefore sums the rounded daily accruals and posts that exact total as a single credit at the end of Day 6. It does not discard a difference or independently calculate a conflicting capitalization amount.
 
 ---
 
 ## 2. Abandoned Architectural Approaches
 
-### In-Memory State Mutation (Stateful OOP Updating)
-*   **Abandoned Reason:** Modifying an `account.balance` primitive variable directly inside an event handler loop makes backdated value updates (`value_date < processing_date`) nearly impossible to trace, audit, or recalculate safely. It was abandoned in favor of a query-based **Event Playback Pattern**, which recalculates point-in-time state records dynamically based on active filter rules.
+### In-Memory State Mutation (Direct Balance Updates)
+
+- **Abandoned approach:** Updating an `account.balance` variable directly inside each event handler.
+- **Reason for rejection:** Direct balance mutation makes backdated value-date events difficult to recalculate and audit. It also makes it harder to distinguish the processing timeline from the value-date timeline and to reproduce historical balance views.
+- **Chosen approach:** Use an append-only event log and query-based event playback. Balances are calculated from applicable events using processing-day and value-day cutoffs. Reversals are recorded as new events and affect the calculated result without mutating or deleting the original event.
+
+### Retroactively Rewriting Previously Assessed Fees
+
+- **Abandoned approach:** Automatically reassessing historical fees whenever a backdated event changes a historical balance.
+- **Reason for rejection:** The specification does not explicitly require retroactive fee reassessment. Automatically changing historical fee decisions would conflate retrospective balance calculation with the original daily assessment process.
+- **Chosen approach:** Assess and record fees during the day-by-day replay. Preserve the assessment history when later events arrive, unless an explicit business rule defines a compensating fee entry.
+
+### Splitting Instalments Using Identical Rounded Amounts
+
+- **Abandoned approach:** Assigning BHD 3.334 to all three E10 instalments.
+- **Reason for rejection:** The resulting total exceeds the original credit.
+- **Chosen approach:** Calculate the base instalment at the currency's precision and assign the remainder to the final instalment.
+
+### Independently Calculating the Capitalized Interest Total
+
+- **Abandoned approach:** Calculating a separate interest total and allowing it to differ from the sum of the rounded daily accruals.
+- **Reason for rejection:** This violates the explicit reconciliation requirement.
+- **Chosen approach:** Sum the rounded daily accrual records and capitalize that exact sum once at the end of Day 6.
+
+### Silently Rounding Invalid Amounts During Error Formatting
+
+- **Abandoned approach:** Rounding an amount only when generating an error message, without first validating the amount's currency precision.
+- **Reason for rejection:** The displayed amount could differ from the actual event amount, or formatting with `RoundingMode.UNNECESSARY` could throw an exception and prevent the intended error from being recorded.
+- **Chosen approach:** Validate monetary precision at the event-processing boundary. Format validated amounts using the relevant currency scale.
+
+---
+
+## 3. Scope and Limitations
+
+These decisions describe the behavior selected for this in-memory ledger assessment. They are not intended to represent every production banking or payment-network rule.
+
+In particular:
+
+- Unmatched settlement handling depends on the applicable payment-network and transaction rules.
+- A reversal of a principal transaction does not automatically imply a fee refund.
+- Historical balance calculation and historical fee assessment are separate concerns.
+- Event validation and financial posting must be distinguishable so rejected events do not accidentally affect balances.
+- Existing ledger events must remain immutable and available for audit and replay.
+- Additional business behavior introduced beyond the explicit requirements must be documented and tested.
