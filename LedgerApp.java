@@ -105,10 +105,13 @@ public class LedgerApp {
                 }
             }
 
-            // Include previously booked overdraft fees belonging to historical value dates
+            // Apply only fees that are known by the processing cutoff
+            // and applicable to the requested value date.
             for (Map.Entry<Integer, BigDecimal> entry : overdraftFeesPerDay.entrySet()) {
-                if (entry.getKey() <= targetValueDay) {
-                    balance = balance.add(entry.getValue().negate());
+                int feeDay = entry.getKey();
+
+                if (feeDay <= asOfProcessingDay && feeDay <= targetValueDay) {
+                    balance = balance.subtract(entry.getValue());
                 }
             }
             return balance.setScale(currency.scale, RoundingMode.HALF_EVEN);
@@ -182,18 +185,22 @@ public class LedgerApp {
             new LedgerEvent("9", 6, EventType.REVERSAL, "ACC-001", BigDecimal.ZERO, 2, null, "7")
         );
 
-        Map<Integer, List<String>> structuralErrorsPerDay = new HashMap<>();
-        for (int d = 1; d <= 6; d++) structuralErrorsPerDay.put(d, new ArrayList<>());
+        //Map<Integer, List<String>> structuralErrorsPerDay = new HashMap<>();
+        //for (int d = 1; d <= 6; d++) structuralErrorsPerDay.put(d, new ArrayList<>());
 
         // Processing Timeline Flow Execution Day 1 to Day 6
         for (int currentDay = 1; currentDay <= 6; currentDay++) {
             final int dayFilter = currentDay;
-            List<LedgerEvent> daysEvents = stream.stream().filter(e -> e.processingDay == dayFilter).toList();
-            List<String> dailyErrors = structuralErrorsPerDay.get(currentDay);
+            List<LedgerEvent> daysEvents = stream.stream()
+                    .filter(e -> e.processingDay() == dayFilter)
+                    .toList();
+
+            List<String> acc1DailyErrors = new ArrayList<>();
+            List<String> acc2DailyErrors = new ArrayList<>();
 
             for (LedgerEvent e : daysEvents) {
                 if (e.accountId.equals("ACC-001")) {
-                    acc1.processEvent(e, dailyErrors);
+                    acc1.processEvent(e, acc1DailyErrors);
                 } else if (e.accountId.equals("ACC-002")) {
                     // E10 Instalment splitting structural check
                     if (e.eventId.equals("10")) {
@@ -201,11 +208,11 @@ public class LedgerApp {
                         BigDecimal baseInstalment = total.divide(new BigDecimal("3"), 3, RoundingMode.DOWN); // 3.333
                         BigDecimal remainder = total.subtract(baseInstalment.multiply(new BigDecimal("2"))); // 3.334
                         
-                        acc2.processEvent(new LedgerEvent("10-S1", dayFilter, EventType.CREDIT, "ACC-002", baseInstalment, dayFilter, null, null), dailyErrors);
-                        acc2.processEvent(new LedgerEvent("10-S2", dayFilter, EventType.CREDIT, "ACC-002", baseInstalment, dayFilter, null, null), dailyErrors);
-                        acc2.processEvent(new LedgerEvent("10-S3", dayFilter, EventType.CREDIT, "ACC-002", remainder, dayFilter, null, null), dailyErrors);
+                        acc2.processEvent(new LedgerEvent("10-S1", dayFilter, EventType.CREDIT, "ACC-002", baseInstalment, dayFilter, null, null), acc2DailyErrors);
+                        acc2.processEvent(new LedgerEvent("10-S2", dayFilter, EventType.CREDIT, "ACC-002", baseInstalment, dayFilter, null, null), acc2DailyErrors);
+                        acc2.processEvent(new LedgerEvent("10-S3", dayFilter, EventType.CREDIT, "ACC-002", remainder, dayFilter, null, null), acc2DailyErrors);
                     } else {
-                        acc2.processEvent(e, dailyErrors);
+                        acc2.processEvent(e, acc2DailyErrors);
                     }
                 }
             }
@@ -219,16 +226,16 @@ public class LedgerApp {
                 BigDecimal acc1Interest = acc1.capitalizeInterest(6);
                 BigDecimal acc2Interest = acc2.capitalizeInterest(6);
                 if (acc1Interest.compareTo(BigDecimal.ZERO) > 0) {
-                    acc1.processEvent(new LedgerEvent("INT-001", 6, EventType.CREDIT, "ACC-001", acc1Interest, 6, null, null), dailyErrors);
+                    acc1.processEvent(new LedgerEvent("INT-001", 6, EventType.CREDIT, "ACC-001", acc1Interest, 6, null, null), acc1DailyErrors);
                 }
                 if (acc2Interest.compareTo(BigDecimal.ZERO) > 0) {
-                    acc2.processEvent(new LedgerEvent("INT-002", 6, EventType.CREDIT, "ACC-002", acc2Interest, 6, null, null), dailyErrors);
+                    acc2.processEvent(new LedgerEvent("INT-002", 6, EventType.CREDIT, "ACC-002", acc2Interest, 6, null, null), acc2DailyErrors);
                 }
             }
 
             // Render closing balance calculations output dashboards
-            acc1.generateSnapshot(currentDay, dailyErrors).print("ACC-001");
-            acc2.generateSnapshot(currentDay, dailyErrors).print("ACC-002");
+            acc1.generateSnapshot(currentDay, acc1DailyErrors).print("ACC-001");
+            acc2.generateSnapshot(currentDay, acc2DailyErrors).print("ACC-002");
         }
 
         runRequiredFailingVerificationTest(acc1);
