@@ -234,23 +234,44 @@ public class LedgerApp {
         runRequiredFailingVerificationTest(acc1);
     }
 
-    // --- ONE MANDATORY INLINE ANNOTATED FAILING TEST COMPONENT ---
+     // --- ONE MANDATORY INLINE ANNOTATED FAILING TEST COMPONENT ---
     private static void runRequiredFailingVerificationTest(AccountEngine acc1) {
-        System.out.println("\n=== RUNNING ANNOTATED INLINE VERIFICATION TEST ===");
-        try {
-            // ASSERTION FAILURE DESIGN: This test is engineered to explicitly catch a hidden regression 
-            // where a Day 5 backdated reversal (E9) can accidentally retroactively erase a historical 
-            // penalty fee record that had already been officially locked on Day 5's processing ledger log.
-            BigDecimal day5LedgerAtDay6View = acc1.getLedgerBalance(6, 5); 
-            BigDecimal expectedValueWithoutFeeErasure = new BigDecimal("-160.00"); // Accounts for E7 balance adjustments + Day 5 penalty charge lock
-            
-            System.out.println("[Test Trace] Checking immutable value continuity for Day 5 historical logs...");
-            if (day5LedgerAtDay6View.compareTo(expectedValueWithoutFeeErasure) != 0) {
-                throw new IllegalStateException("TEST FAILURE CAUGHT: Append-only immutable constraint violated! Historical fee logs were corrupted or retroactively deleted after E9 execution.");
-            }
-            System.out.println("Verification check completed successfully.");
-        } catch (Exception ex) {
-            System.err.println("❌ " + ex.getMessage());
+    
+        System.out.println("\n=== INTENTIONAL DESIGN-LIMITATION TEST ===");
+    
+        BigDecimal day5BalanceAtDay5 =
+                acc1.getLedgerBalance(5, 5);
+    
+        BigDecimal day5BalanceAtDay6 =
+                acc1.getLedgerBalance(6, 5);
+    
+        System.out.println(
+                "Day 5 balance at Day 5 cutoff: "
+                        + day5BalanceAtDay5
+        );
+    
+        System.out.println(
+                "Day 5 balance at Day 6 cutoff: "
+                        + day5BalanceAtDay6
+        );
+    
+        // INTENTIONAL FAILURE:
+        // This test assumes that a historical balance remains unchanged
+        // after later events arrive.
+        //
+        // However, this design recalculates balances from the event log.
+        // E9 reverses E7, so including Day 6 events changes the recalculated
+        // Day 5 balance.
+        //
+        // The original events remain in the append-only log, but immutable
+        // historical balance snapshots are not supported.
+    
+        if (day5BalanceAtDay5.compareTo(day5BalanceAtDay6) != 0) {
+            throw new AssertionError(
+                    "EXPECTED FAILURE: The recalculated Day 5 balance changed "
+                            + "after E9 was processed on Day 6. "
+                            + "Immutable historical snapshots are not supported."
+            );
         }
     }
 }
